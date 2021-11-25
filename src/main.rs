@@ -1,181 +1,125 @@
-use std::time::Instant;
-
 use rand::Rng;
-use wgpu::{
-    include_wgsl, util::DeviceExt, Backends, BindGroupLayoutEntry, BufferUsages, DeviceDescriptor,
-    Features, Instance, Limits, RequestAdapterOptions, SurfaceConfiguration, TextureUsages,
-};
+use wgpu::util::DeviceExt;
+use wgpu::{BufferUsages, Extent3d, Features, TextureUsages};
+
+use winit::event::{ElementState, KeyboardInput, VirtualKeyCode};
 use winit::{
-    event::{Event, VirtualKeyCode, WindowEvent},
+    event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    window::Window,
 };
 
-fn main() {
-    pollster::block_on(run());
-}
+const NUM_SLIMES: u32 = 1024 * 1024;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Slime {
-    x: f32,
-    y: f32,
+    pos: [f32; 2],
     heading: f32,
+    species: u32,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    time: f32,
+struct SlimeMoveConfig {
+    width: u32,
+    height: u32,
+    num_slimes: u32,
+    delta_time: f32,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    uv: [f32; 2],
+struct WorldUpdateConfig {
+    width: u32,
+    height: u32,
+    delta_time: f32,
+    random: f32,
 }
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-1.0, -1.0],
-        uv: [0.0, 0.0],
-    },
-    Vertex {
-        position: [-1.0, 1.0],
-        uv: [0.0, 1.0],
-    },
-    Vertex {
-        position: [1.0, 1.0],
-        uv: [1.0, 1.0],
-    },
-    Vertex {
-        position: [1.0, -1.0],
-        uv: [1.0, 0.0],
-    },
-];
+impl Slime {
+    fn new_swarm(size: usize) -> Vec<Slime> {
+        let mut swarm = Vec::with_capacity(size);
+        let mut rng = rand::thread_rng();
+        for _ in 0..size {
+            let r = rng.gen_range(0.1..0.2);
+            swarm.push(Slime {
+                pos: [
+                    rng.gen_range(0.0..std::f32::consts::PI * 2.0).cos() * r + 0.5,
+                    rng.gen_range(0.0..std::f32::consts::PI * 2.0).sin() * r + 0.5,
+                ],
+                heading: rng.gen_range(0.0..std::f32::consts::PI * 2.0),
+                // heading: 0.0,
+                species: 0,
+            });
+        }
+        swarm
+    }
+}
 
-const INDICIES: &[u16] = &[0, 2, 1, 0, 3, 2];
+async fn run(event_loop: EventLoop<()>, window: Window) {
+    // ============ Adapter, Device and Surface Creation ============== //
 
-const NUM_SLIMES: u32 = 64;
-const TEXTURE_DIMS: (u32, u32) = (64, 64);
-
-async fn run() {
-    let mut uniforms = Uniforms { time: 1.0 };
-    let slimes = create_slimes(NUM_SLIMES);
-
-    // Create Window:
-    let events_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_title("GPU Slime Mould")
-        // .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
-        .with_resizable(false)
-        .with_inner_size(winit::dpi::LogicalSize::new(1024, 1024))
-        .build(&events_loop)
-        .unwrap();
-
-    let window_size = window.inner_size();
-
-    // Initialize Gpu devices
-    let instance = Instance::new(Backends::PRIMARY);
+    let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
     let surface = unsafe { instance.create_surface(&window) };
-
     let adapter = instance
-        .request_adapter(&RequestAdapterOptions {
+        .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: Some(&surface),
         })
         .await
-        .unwrap();
+        .expect("error finding adapter");
 
-    println!("Selected Adapter: {}", adapter.get_info().name);
+    let adapter_features = adapter.features();
 
-    // Create Device and Configure Surface
     let (device, queue) = adapter
         .request_device(
-            &DeviceDescriptor {
+            &wgpu::DeviceDescriptor {
                 label: None,
-                features: Features::empty(),
-                limits: Limits::default(),
+                features: adapter_features | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                limits: Default::default(),
             },
             None,
         )
         .await
-        .unwrap();
-
-    let surface_config = SurfaceConfiguration {
-        usage: TextureUsages::RENDER_ATTACHMENT,
-        format: surface.get_preferred_format(&adapter).unwrap(),
-        width: window_size.width,
-        height: window_size.height,
-        present_mode: wgpu::PresentMode::Fifo,
+        .expect("error creating device");
+    let size = window.inner_size();
+    let format = surface.get_preferred_format(&adapter).unwrap();
+    let sc = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width: size.width,
+        height: size.height,
+        present_mode: wgpu::PresentMode::Mailbox,
     };
+    surface.configure(&device, &sc);
 
-    surface.configure(&device, &surface_config);
+    // ============ Create Render Pipeline ============== //
 
-    // Create texure;
-    let texture_bytes = create_random_texture(TEXTURE_DIMS);
-
-    let texture_size = wgpu::Extent3d {
-        width: TEXTURE_DIMS.0,
-        height: TEXTURE_DIMS.1,
-        depth_or_array_layers: 1,
-    };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Texture"),
-        size: texture_size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: TextureUsages::TEXTURE_BINDING
-            | TextureUsages::COPY_DST
-            | TextureUsages::STORAGE_BINDING,
+    // We use a render pipeline just to copy the output buffer of the compute shader to the
+    // swapchain. It would be nice if we could skip this, but swapchains with storage usage
+    // are not fully portable.
+    let copy_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader.wgsl").into()),
     });
-    let texture_data_layout = wgpu::ImageDataLayout {
-        offset: 0,
-        bytes_per_row: std::num::NonZeroU32::new(4 * TEXTURE_DIMS.0 as u32),
-        rows_per_image: std::num::NonZeroU32::new(TEXTURE_DIMS.1 as u32),
-    };
-    queue.write_texture(
-        wgpu::ImageCopyTexture {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &texture_bytes,
-        texture_data_layout,
-        texture_size,
-    );
-    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("Sampler"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Nearest,
-        min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::FilterMode::Nearest,
-        ..Default::default()
-    });
-
-    let texture_bind_group_layout =
+    let copy_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
-                BindGroupLayoutEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                        // Should filterable be false if we want nearest-neighbor?
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
                 },
-                BindGroupLayoutEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler {
@@ -186,35 +130,252 @@ async fn run() {
                 },
             ],
         });
-
-    let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
-        layout: &texture_bind_group_layout,
+        bind_group_layouts: &[&copy_bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &copy_shader,
+            entry_point: "vs_main",
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &copy_shader,
+            entry_point: "fs_main",
+            targets: &[format.into()],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+    });
+
+    // Create two textures, (custom swapchain)
+    let img = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: TextureUsages::STORAGE_BINDING
+            | TextureUsages::TEXTURE_BINDING
+            | TextureUsages::COPY_DST,
+    });
+    let img_view = img.create_view(&Default::default());
+
+    let next_img = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: TextureUsages::STORAGE_BINDING
+            | TextureUsages::TEXTURE_BINDING
+            | TextureUsages::COPY_SRC,
+    });
+    let next_img_view = next_img.create_view(&Default::default());
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let copy_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &copy_bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(&texture_view),
+                resource: wgpu::BindingResource::TextureView(&img_view),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Sampler(&texture_sampler),
+                resource: wgpu::BindingResource::Sampler(&sampler),
             },
         ],
     });
 
-    // Uniforms Bind Group Layout
-    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    // === World Map Swap Chain === //
+    let world_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+    let world_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
-        contents: bytemuck::cast_slice(&[uniforms]),
-        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        layout: &world_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&img_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&next_img_view),
+            },
+        ],
+    });
+    let inverted_world_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &world_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&next_img_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&img_view),
+            },
+        ],
     });
 
-    let uniform_bind_group_layout =
+    // ========== Slime Movement Shader ========== //
+
+    let mut slime_move_params = SlimeMoveConfig {
+        width: size.width,
+        height: size.height,
+        num_slimes: NUM_SLIMES,
+        delta_time: 0.0,
+    };
+
+    let slimes = Slime::new_swarm(NUM_SLIMES as usize);
+
+    let slimes_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        usage: BufferUsages::COPY_DST | BufferUsages::STORAGE,
+        contents: bytemuck::cast_slice(&slimes),
+    });
+
+    let slime_move_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        usage: BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::UNIFORM,
+        contents: bytemuck::cast_slice(&[slime_move_params]),
+    });
+
+    let slime_move_cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/move_slimes.wgsl").into()),
+    });
+
+    let slime_move_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+    let slime_move_compute_pipeline_layout =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&slime_move_bind_group_layout, &world_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+    let slime_move_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&slime_move_compute_pipeline_layout),
+        module: &slime_move_cs_module,
+        entry_point: "main",
+    });
+    let slime_move_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &slime_move_bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: slime_move_params_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: slimes_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    // ========== World Processing Shader ============ //
+    let mut world_update_params = WorldUpdateConfig {
+        width: size.width,
+        height: size.height,
+        delta_time: 0.0,
+        random: rand::thread_rng().gen_range(0.0..1.0),
+    };
+
+    let world_update_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        usage: BufferUsages::COPY_DST | BufferUsages::UNIFORM,
+        contents: bytemuck::cast_slice(&[world_update_params]),
+    });
+
+    let world_update_cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/update_world.wgsl").into()),
+    });
+
+    let world_update_bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -223,272 +384,156 @@ async fn run() {
                 count: None,
             }],
         });
-    let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let world_update_compute_pipeline_layout =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&world_update_bind_group_layout, &world_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+    let world_update_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: None,
-        layout: &uniform_bind_group_layout,
+        layout: Some(&world_update_compute_pipeline_layout),
+        module: &world_update_cs_module,
+        entry_point: "main",
+    });
+    let world_update_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &world_update_bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
-            resource: uniform_buffer.as_entire_binding(),
+            resource: world_update_params_buffer.as_entire_binding(),
         }],
     });
 
-    // Create Render Pipeline
-    let shader = device.create_shader_module(&include_wgsl!("./shaders/shader.wgsl"));
+    let start_time = std::time::Instant::now();
+    let mut last_frame_time = std::time::Instant::now();
+    let mut rng = rand::thread_rng();
 
-    let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Pipeline layout descriptor"),
-        bind_group_layouts: &[&texture_bind_group_layout, &uniform_bind_group_layout],
-        push_constant_ranges: &[],
-    });
-
-    // Create a vertex and index buffer
-
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Index Buffer"),
-        contents: bytemuck::cast_slice(INDICIES),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Vertex Buffer"),
-        contents: bytemuck::cast_slice(VERTICES),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-
-    let vertex_buffer_layout = wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
-    };
-
-    let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Render Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            buffers: &[vertex_buffer_layout],
-        },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: Some(wgpu::Face::Back),
-            clamp_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: "fs_main",
-            targets: &[wgpu::ColorTargetState {
-                format: surface_config.format,
-                blend: Some(wgpu::BlendState::REPLACE),
-                write_mask: wgpu::ColorWrites::ALL,
-            }],
-        }),
-    });
-
-    // Create Compute Pipeline:
-
-    // Step 1: Run compute shader for all slimes, update their positions, and update current pixel buffer
-    // Step 2: Run compute shader for all pixels in the world and blur and fade the scent.
-
-    // Slime Buffer
-    // Current Pixel Values
-    // Next Pixel Values
-
-    let slime_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Slimes Buffer"),
-        contents: bytemuck::cast_slice(&slimes),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    let world = create_random_texture(TEXTURE_DIMS);
-    let world_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("World Buffer"),
-        contents: bytemuck::cast_slice(&world),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    let slime_buffer_bind_group_layout =
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    },
-                    count: None,
-                },
-            ],
-        });
-    let slime_buffer_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &slime_buffer_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &slime_buffer,
-                    offset: 0,
-                    size: None,
-                }),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &world_buffer,
-                    offset: 0,
-                    size: None,
-                }),
-            },
-        ],
-    });
-
-    let compute_shader = device.create_shader_module(&include_wgsl!("./shaders/compute.wgsl"));
-
-    let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[&slime_buffer_bind_group_layout],
-        push_constant_ranges: &[],
-    });
-
-    let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Compute Pipeline"),
-        layout: Some(&compute_pipeline_layout),
-        module: &compute_shader,
-        entry_point: "compute_main",
-    });
-
-    let start_time = Instant::now();
-
-    // Run event loop
-    events_loop.run(move |evt, _, control_flow| {
-        match evt {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
-                    return;
-                }
-                WindowEvent::KeyboardInput { input, .. } => match input.virtual_keycode {
-                    Some(VirtualKeyCode::Escape) => {
-                        *control_flow = ControlFlow::Exit;
-                        return;
-                    }
-                    _ => (),
-                },
-                _ => (),
-            },
+    event_loop.run(move |event, _, control_flow| {
+        // TODO: this may be excessive polling. It really should be synchronized with
+        // swapchain presentation, but that's currently underbaked in wgpu.
+        *control_flow = ControlFlow::Poll;
+        match event {
             Event::RedrawRequested(_) => {
-                uniforms.time = (Instant::now() - start_time).as_secs_f32();
-                queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                let frame = surface
+                    .get_current_texture()
+                    .expect("error getting texture from swap chain");
 
-                // Render the scene
-                let output = surface.get_current_texture().unwrap();
-                let view = output
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let delta_time = last_frame_time.elapsed();
+                last_frame_time = std::time::Instant::now();
 
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Command Encoder"),
-                });
+                slime_move_params = SlimeMoveConfig {
+                    width: size.width,
+                    height: size.height,
+                    num_slimes: NUM_SLIMES,
+                    delta_time: delta_time.as_secs_f32(),
+                };
+                world_update_params = WorldUpdateConfig {
+                    width: size.width,
+                    height: size.height,
+                    delta_time: delta_time.as_secs_f32(),
+                    random: rng.gen_range(0.0..1.0),
+                };
 
-                // Run the compute shaders:
-                let mut compute_pass =
-                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None });
+                queue.write_buffer(
+                    &slime_move_params_buffer,
+                    0,
+                    bytemuck::cast_slice(&[slime_move_params]),
+                );
+                queue.write_buffer(
+                    &world_update_params_buffer,
+                    0,
+                    bytemuck::cast_slice(&[world_update_params]),
+                );
 
-                compute_pass.set_pipeline(&compute_pipeline);
-                compute_pass.set_bind_group(0, &slime_buffer_bind_group, &[]);
-                compute_pass.dispatch(NUM_SLIMES, 1, 1);
-
-                drop(compute_pass);
-
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Render Pass"),
-                    color_attachments: &[wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 1.0,
-                            }),
-                            store: true,
-                        },
-                    }],
-                    depth_stencil_attachment: None,
-                });
-
-                render_pass.set_pipeline(&render_pipeline);
-                render_pass.set_bind_group(0, &texture_bind_group, &[]);
-                render_pass.set_bind_group(1, &uniform_bind_group, &[]);
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.draw_indexed(0..INDICIES.len() as u32, 0, 0..1);
-
-                drop(render_pass);
-
-                queue.submit(std::iter::once(encoder.finish()));
-                output.present();
+                let mut encoder = device.create_command_encoder(&Default::default());
+                {
+                    let mut cpass = encoder.begin_compute_pass(&Default::default());
+                    cpass.set_pipeline(&slime_move_pipeline);
+                    cpass.set_bind_group(0, &slime_move_bind_group, &[]);
+                    cpass.set_bind_group(1, &inverted_world_bind_group, &[]);
+                    cpass.dispatch(NUM_SLIMES / 64, 1, 1);
+                }
+                {
+                    let mut cpass = encoder.begin_compute_pass(&Default::default());
+                    cpass.set_pipeline(&world_update_pipeline);
+                    cpass.set_bind_group(0, &world_update_bind_group, &[]);
+                    cpass.set_bind_group(1, &world_bind_group, &[]);
+                    cpass.dispatch(size.width / 16, size.height / 16, 1);
+                }
+                encoder.copy_texture_to_texture(
+                    wgpu::ImageCopyTexture {
+                        texture: &next_img,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::ImageCopyTexture {
+                        texture: &img,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: size.width,
+                        height: size.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                {
+                    let view = frame
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: true,
+                            },
+                        }],
+                        depth_stencil_attachment: None,
+                    });
+                    rpass.set_pipeline(&render_pipeline);
+                    rpass.set_bind_group(0, &copy_bind_group, &[]);
+                    rpass.draw(0..3, 0..2);
+                }
+                queue.submit(Some(encoder.finish()));
+                frame.present();
             }
             Event::MainEventsCleared => {
-                // std::thread::sleep(std::time::Duration::from_millis(500));
                 window.request_redraw();
             }
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            }
+            | Event::WindowEvent {
+                event:
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                state: ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    },
+                ..
+            } => *control_flow = ControlFlow::Exit,
             _ => (),
         }
     });
 }
 
-fn create_slimes(n: u32) -> Vec<Slime> {
-    let start = Instant::now();
-    let mut slimes = Vec::with_capacity(n as usize);
-    let mut rng = rand::thread_rng();
-    for _ in 0..n {
-        slimes.push(Slime {
-            x: rng.gen_range(0.0..1.0),
-            y: rng.gen_range(0.0..1.0),
-            heading: rng.gen_range(0.0..std::f32::consts::PI * 2.0),
-        })
-    }
-    println!("Created {} slimes in {:?}", n, Instant::now() - start);
-    slimes
-}
-
-fn create_random_texture((w, h): (u32, u32)) -> Vec<u8> {
-    let start = Instant::now();
-    let n = (4 * w * h) as usize;
-    let mut bytes = vec![0; n];
-    let mut rng = rand::thread_rng();
-    for i in (0..n).step_by(4) {
-        bytes[i + 0] = rng.gen_range(0..=255);
-        bytes[i + 1] = rng.gen_range(0..=255);
-        bytes[i + 2] = rng.gen_range(0..=255);
-        bytes[i + 3] = 255;
-    }
-    println!("Created new random texture in {:?}", Instant::now() - start);
-    bytes
+fn main() {
+    let event_loop = EventLoop::new();
+    let window = winit::window::WindowBuilder::new()
+        .with_title("GPU Slime Mould")
+        .with_inner_size(winit::dpi::LogicalSize::new(1024, 1024))
+        .build(&event_loop)
+        .unwrap();
+    pollster::block_on(run(event_loop, window));
 }
