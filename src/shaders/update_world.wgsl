@@ -1,24 +1,49 @@
 let blur_kernel_size : i32 = 1;
-let diffuse_amt: f32 = 1.0;
-let dissipate_amt: f32 = 0.005;
+let dissipate_amt: f32 = 0.95;
 
 [[block]]
 struct Params {
-    width: u32;
-    height: u32;
     delta_time: f32;
 };
 
+[[block]]
+struct StaticParams {
+    width: u32;
+    height: u32;
+    num_slimes: u32;
+};
+
+[[block]] struct World {
+    values: array<f32>;
+};
+
 [[group(0), binding(0)]] var<uniform> params: Params;
+[[group(2), binding(0)]] var<uniform> static_params: StaticParams;
 
-[[group(1), binding(0)]] var input_tex: texture_2d<f32>;
-[[group(1), binding(1)]] var output_tex: texture_storage_2d<rgba32float,write>;
+[[group(1), binding(0)]] var<storage, read> input_buf: World;
+[[group(1), binding(1)]] var<storage, read_write> output_buf: World;
 
-[[stage(compute), workgroup_size(16, 16)]]
+fn load(index: vec2<i32>) -> f32 {
+    if (index.x >= 0 && index.y >= 0 && index.x < i32(static_params.width) && index.y < i32(static_params.height)) {
+        return input_buf.values[index.x + index.y * i32(static_params.width)];
+    } else {
+        return 0.0;
+    }
+}
+
+fn store(index: vec2<i32>, value: f32) -> void {
+    if (index.x >= 0 && index.y >= 0 && index.x < i32(static_params.width) && index.y < i32(static_params.height)) {
+        output_buf.values[index.x + index.y * i32(static_params.width)] = value;
+    }
+}
+
+
+[[stage(compute), workgroup_size(8, 8, 1)]]
 fn main([[builtin(global_invocation_id)]] global_ix: vec3<u32>) {
-    let in_color = textureLoad(input_tex, vec2<i32>(global_ix.xy), 0);
+    let tex_index = vec2<i32>(global_ix.xy);
+    // let current_val = load(tex_index);
 
-    var avg_color : vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var avg_val : f32 = 0.0;
 
     var x : i32 = -blur_kernel_size;
     var y : i32 = -blur_kernel_size;
@@ -29,21 +54,17 @@ fn main([[builtin(global_invocation_id)]] global_ix: vec3<u32>) {
             x = x + 1;
             y = -blur_kernel_size;
         } else {
-            let point = vec2<i32>(global_ix.xy) + vec2<i32>(y, x);
-            if (point.x > 0 && point.y > 0 && point.x < i32(params.width) && point.y < i32(params.height)) {
-                avg_color = avg_color + textureLoad(input_tex, point, 0);
+            let point = tex_index + vec2<i32>(y, x);
+            if (point.x > 0 && point.y > 0 && point.x < i32(static_params.width) && point.y < i32(static_params.height)) {
+                avg_val = avg_val + load(point);
                 num_samples = num_samples + 1;
             }
             y = y + 1;
         }
     }
 
-    avg_color = avg_color / f32(num_samples);
-    let difference = avg_color - in_color;
+    avg_val = avg_val / f32(num_samples);
+    let next_val = avg_val * dissipate_amt;
 
-    var color : vec4<f32> = avg_color + difference * params.delta_time * diffuse_amt;
-
-    color = vec4<f32>(color.rgb - dissipate_amt * params.delta_time, 1.0);
-
-    textureStore(output_tex, vec2<i32>(global_ix.xy), color);
+    store(tex_index, clamp(next_val, 0.0, 2.0));
 }

@@ -7,7 +7,11 @@ edition = "2021"
 
 [dependencies]
 bytemuck = { version = "1.7.2", features = ["derive"] }
+naga = "0.7.1"
+notify = "4.0.17"
 pollster = "0.2.4"
 rand = "0.8.4"
 wgpu = "0.11.0"
 winit = "0.25.0"
+image = "0.23.14"
+workerpool = "1.2.0"
