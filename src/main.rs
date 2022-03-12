@@ -16,13 +16,15 @@ use winit::{
 use workerpool::thunk::{Thunk, ThunkWorker};
 use workerpool::Pool;
 
-const NUM_SLIMES: u32 = 1024 * 1024 * 2; // 1024 * 1024 * 2 is MAX. Computer will crash after that
+const NUM_SLIMES: u32 = 1024 * 1024 * 3; // 1024 * 1024 * 2 is MAX. Computer will crash after that
 #[allow(dead_code)]
-const WINDOW_SIZE: (u32, u32) = ((1284.0 * 0.46) as u32, (2778.0 * 0.46) as u32);
-const WORLD_SIZE: (u32, u32) = (1280, 2776); // My Phone (1284 x 2778)
-                                             // const WORLD_SIZE: (u32, u32) = (2560 * 2, 1440 * 2); // My Monitor
-const FLOATS_PER_PIXEL: u32 = 1;
-const VID_N_SKIP_FRAMES: u128 = 8;
+const WINDOW_SIZE: (u32, u32) = ((2560.0 * 0.6) as u32, (1440.0 * 0.6) as u32);
+// const WORLD_SIZE: (u32, u32) = (1088, 2176); // Georg Phone (1284 x 2778)
+// const WORLD_SIZE: (u32, u32) = (1280, 2776); // My Phone (1284 x 2778)
+const WORLD_SIZE: (u32, u32) = ((2560.0 * 1.5) as u32, (1440.0 * 1.5) as u32); // My Monitor
+const FLOATS_PER_PIXEL: u32 = 4;
+const VID_N_SKIP_FRAMES: u128 = 6;
+const BEGIN_WITH_RECORDING: bool = false;
 
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
@@ -47,6 +49,7 @@ struct StaticGlobalParams {
 struct SlimeMoveConfig {
     delta_time: f32,
     random: f32,
+    move_to_center: u32,
 }
 
 #[repr(C)]
@@ -55,12 +58,17 @@ struct WorldUpdateConfig {
     delta_time: f32,
 }
 
+enum RecordingState {
+    Off,
+    On(u128, usize),
+}
+
 impl Slime {
     fn new_swarm(size: usize) -> Vec<Slime> {
         let mut swarm = Vec::with_capacity(size);
         let mut rng = rand::thread_rng();
         for _ in 0..size {
-            let r = rng.gen_range(300.0..500.0);
+            let r = rng.gen_range(0.0..10.0);
             let angle = rng.gen_range(0.0..std::f32::consts::PI * 2.0);
             #[allow(unused)]
             let in_circle = [
@@ -76,7 +84,7 @@ impl Slime {
                 pos: in_circle,
                 heading: rng.gen_range(0.0..std::f32::consts::PI * 2.0),
                 // heading: 0.0,
-                species: 0,
+                species: rng.gen_range(0..2),
             });
         }
         swarm
@@ -212,7 +220,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let current_world_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&init_world_data),
-        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
+        usage: wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::STORAGE,
     });
 
     let next_world_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -342,6 +352,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let slime_move_params = SlimeMoveConfig {
         delta_time: 0.0,
         random: 0.0,
+        move_to_center: 0,
     };
 
     let slimes = Slime::new_swarm(NUM_SLIMES as usize);
@@ -538,13 +549,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     let save_img_pool = Pool::<ThunkWorker<()>>::new(128);
 
-    enum RecordingState {
-        Off,
-        On(u128, usize),
-    }
-
-    let mut recording = RecordingState::Off;
+    let mut recording = if BEGIN_WITH_RECORDING {
+        start_recording()
+    } else {
+        RecordingState::Off
+    };
     let mut frame_counter: u128 = 0;
+
+    let mut moving_to_center = 0;
 
     event_loop.run(move |event, _, control_flow| {
         // TODO: this may be excessive polling. It really should be synchronized with
@@ -566,6 +578,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     bytemuck::cast_slice(&[SlimeMoveConfig {
                         delta_time: delta_time.as_secs_f32(),
                         random: rng.gen_range(0.0..1.0),
+                        move_to_center: moving_to_center,
                     }]),
                 );
                 queue.write_buffer(
@@ -739,17 +752,34 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         ..
                     } => {
                         recording = match recording {
-                            RecordingState::Off => {
-                                let now = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis();
-                                let dirpath = format!("videos/video-{}", now);
-                                std::fs::create_dir(dirpath).unwrap();
-                                RecordingState::On(now, 0)
-                            }
+                            RecordingState::Off => start_recording(),
                             RecordingState::On(_, _) => RecordingState::Off,
                         };
+                    }
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::Space),
+                        ..
+                    } => {
+                        queue.write_buffer(&slimes_buffer, 0, bytemuck::cast_slice(&slimes));
+                        queue.write_buffer(
+                            &current_world_buffer,
+                            0,
+                            bytemuck::cast_slice(&init_world_data),
+                        );
+                        queue.write_buffer(
+                            &next_world_buffer,
+                            0,
+                            bytemuck::cast_slice(&init_world_data),
+                        );
+                        queue.submit(None);
+                    }
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::C),
+                        ..
+                    } => {
+                        moving_to_center = (moving_to_center + 1) % 2;
                     }
                     _ => (),
                 },
@@ -758,6 +788,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             _ => (),
         }
     });
+}
+
+fn start_recording() -> RecordingState {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let dirpath = format!("videos/video-{}", now);
+    std::fs::create_dir(dirpath).unwrap();
+    RecordingState::On(now, 0)
 }
 
 fn save_image(
