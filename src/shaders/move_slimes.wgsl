@@ -10,18 +10,18 @@ let pi: f32 = 3.14159265359;
 
 let move_params_arr: array<MoveParams, 4> = array<MoveParams, 4>(
     MoveParams (
-        3.0, // speed
-        0.8, // turn speed
-        20.0, // sense distance
-        0.9, // sense angle
-        0.2, // deposit
+        5.0, // speed
+        0.4, // turn speed
+        6.0, // sense distance
+        0.5, // sense angle
+        0.1, // deposit
     ),
     MoveParams (
-        3.0, // speed
-        0.25, // turn speed
-        15.0, // sense distance
-        0.3, // sense angle
-        0.15, // deposit
+        5.0, // speed
+        0.4, // turn speed
+        6.0, // sense distance
+        0.5, // sense angle
+        0.1, // deposit
     ),
     MoveParams (
         2.1, // speed
@@ -99,13 +99,36 @@ fn rand(id: u32) -> f32 {
     return fract(sin(dot(co, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 }
 
+
+fn sample_filter(pos: vec2<f32>) -> f32 {
+    let radius = f32(static_params.height) * 0.30;
+    let center = vec2<f32>(f32(static_params.width)/2.0, f32(static_params.height)/2.0);
+    let dist = distance(pos, center);
+    if (dist > radius) {
+        return 0.0;
+    } else {
+        return 1.0;
+    }
+}
+
 fn sample(pos: vec2<f32>, species: u32) -> f32 {
     let val = load(vec2<i32>(pos));
+    let sample = sample_filter(pos);
+    let center = vec2<f32>(f32(static_params.width)/2.0, f32(static_params.height)/2.0);
+    let dist_home = 0.6 - distance(pos, center) * 0.0005;
     if (species == 0u) {
-        return val.x - val.y;
+        if(sample == 0.0) {
+            return (dist_home) * val.x;
+        } else {
+            return sample * (val.x / val.y);
+        }
     }
     if (species == 1u) {
-        return val.y / val.x;
+        if(sample == 0.0) {
+            return dist_home - val.x;
+        } else {
+            return sample * (val.y / val.x);
+        }
         // return val.x * val.y;
     }
     if (species == 2u) {
