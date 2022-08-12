@@ -18,10 +18,12 @@ use workerpool::Pool;
 
 const NUM_SLIMES: u32 = 1024 * 1024 * 3; // 1024 * 1024 * 2 is MAX. Computer will crash after that
 #[allow(dead_code)]
-const WINDOW_SIZE: (u32, u32) = ((2560.0 * 0.6) as u32, (1440.0 * 0.6) as u32);
+const WINDOW_SIZE: (u32, u32) = (1600, 900);
+// const WINDOW_SIZE: (u32, u32) = ((2560.0 * 0.6) as u32, (1440.0 * 0.6) as u32);
 // const WORLD_SIZE: (u32, u32) = (1088, 2176); // Georg Phone (1284 x 2778)
 // const WORLD_SIZE: (u32, u32) = (1280, 2776); // My Phone (1284 x 2778)
-const WORLD_SIZE: (u32, u32) = ((2560.0 * 1.5) as u32, (1440.0 * 1.5) as u32); // My Monitor
+// const WORLD_SIZE: (u32, u32) = ((2560.0 * 1.5) as u32, (1440.0 * 1.5) as u32); // My Monitor
+const WORLD_SIZE: (u32, u32) = (3200, 1800);
 const FLOATS_PER_PIXEL: u32 = 4;
 const VID_N_SKIP_FRAMES: u128 = 6;
 const BEGIN_WITH_RECORDING: bool = false;

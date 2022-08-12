@@ -11,17 +11,17 @@ let pi: f32 = 3.14159265359;
 let move_params_arr: array<MoveParams, 4> = array<MoveParams, 4>(
     MoveParams (
         3.0, // speed
-        0.8, // turn speed
-        20.0, // sense distance
-        0.9, // sense angle
+        0.4, // turn speed
+        4.0, // sense distance
+        0.5, // sense angle
         0.2, // deposit
     ),
     MoveParams (
         3.0, // speed
-        0.25, // turn speed
-        15.0, // sense distance
-        0.3, // sense angle
-        0.15, // deposit
+        0.4, // turn speed
+        4.0, // sense distance
+        0.5, // sense angle
+        0.2, // deposit
     ),
     MoveParams (
         2.1, // speed
@@ -102,11 +102,11 @@ fn rand(id: u32) -> f32 {
 fn sample(pos: vec2<f32>, species: u32) -> f32 {
     let val = load(vec2<i32>(pos));
     if (species == 0u) {
-        return val.x - val.y;
+        return val.x / val.y;
     }
     if (species == 1u) {
         return val.y / val.x;
-        // return val.x * val.y;
+        // return val.x * val.y - val.x + val.y;
     }
     if (species == 2u) {
         return val.z;
