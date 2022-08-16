@@ -87,13 +87,13 @@ fn main([[builtin(global_invocation_id)]] global_ix: vec3<u32>) {
     let val = load(tex_index);
     // let val = rand(f32(global_ix.x + global_ix.y * static_params.width) / f32(static_params.width * static_params.height));
     let frag = vec2<f32>(global_ix.xy) / vec2<f32>(f32(static_params.width), f32(static_params.height));
-    // let c1 = vec4<f32>(map01(1.0 - frag.x, -0.2, 0.4), 1.0, map01(1.0 - frag.y, -0.4, 0.02), 1.0) * val.x;
-    // let c2 = vec4<f32>(map01(frag.y, 1.0, 0.0), frag.x * 0.1, map01(frag.y, 0.0, 1.0), 1.0) * val.y;
-    let c1 = vec3<f32>(0.0, frag.x * 0.5 + 0.05, frag.y * 3.0 + 0.3) * val.r;
-    let c2 = vec3<f32>(map(cos(frag.x * 6.28), -1.0, 1.0, 0.4, 0.6), frag.x * 0.1 + 0.2, frag.y * 1.0 + 1.0) * val.g;
-    let c3 = vec3<f32>(0.0, frag.x * 1.0 + 0.3, (1.0 - frag.y) * 1.0 + 0.1) * val.b;
-    let c4 = vec3<f32>(map01(frag.x * frag.y, 0.0, 0.5), frag.x * 1.5 + 0.05, frag.y * 2.0 + 0.1) * val.a;
-    let color = (c1 + c2 + c3 + c4) * 0.8;
+    let c1 = vec4<f32>(map01(1.0 - frag.x, -0.2, 0.1), 0.0, map01(1.0 - frag.y, -0.4, 0.02) + 0.3, 1.0) * val.x;
+    let c2 = vec4<f32>(map01(frag.y, 1.0, 0.0), frag.x * 0.1, map01(frag.y, 0.0, 1.0), 1.0) * val.y;
+    // let c1 = vec3<f32>(frag.y * 3.0 + 0.6, frag.x * 0.3 + 0.05, 0.0) * val.r;
+    // let c2 = vec3<f32>(frag.x * 0.1 + 0.2, frag.y * 1.0 + 1.0, map(cos(frag.x * 6.28), -1.0, 1.0, 0.1, 0.2)) * val.g;
+    // let c3 = vec3<f32>(frag.x * 1.0 + 0.3, (1.0 - frag.y) * 1.0 + 0.1, 0.0) * val.b;
+    // let c4 = vec3<f32>(map01(frag.x * frag.y, 0.0, 0.5), frag.x * 1.5 + 0.05, frag.y * 2.0 + 0.1) * val.a;
+    let color = (c1 + c2) * 1.5;
     // let color = vec4<f32>(val, val, val, 1.0);
     textureStore(output_tex, tex_index, vec4<f32>(color.rgb, 1.0));
 }

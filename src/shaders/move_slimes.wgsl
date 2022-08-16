@@ -14,14 +14,14 @@ let move_params_arr: array<MoveParams, 4> = array<MoveParams, 4>(
         0.4, // turn speed
         4.0, // sense distance
         0.5, // sense angle
-        0.2, // deposit
+        0.1, // deposit
     ),
     MoveParams (
         3.0, // speed
         0.4, // turn speed
         4.0, // sense distance
         0.5, // sense angle
-        0.2, // deposit
+        0.1, // deposit
     ),
     MoveParams (
         2.1, // speed
