@@ -18,17 +18,17 @@ let move_params_arr: array<MoveParams, 4> = array<MoveParams, 4>(
     ),
     MoveParams (
         5.0, // speed
-        0.4, // turn speed
+        0.5, // turn speed
         6.0, // sense distance
         0.5, // sense angle
         0.1, // deposit
     ),
     MoveParams (
-        2.1, // speed
+        2.0, // speed
         0.3, // turn speed
-        45.0, // sense distance
-        0.82, // sense angle
-        0.2, // deposit
+        3.0, // sense distance
+        0.9, // sense angle
+        0.1, // deposit
     ),
     MoveParams (
         0.2, // speed
@@ -107,7 +107,11 @@ fn sample_filter(pos: vec2<f32>) -> f32 {
     if (dist > radius) {
         return 0.0;
     } else {
-        return 1.0;
+        if (dist < radius * 0.5) {
+            return 0.0;
+        } else {
+            return 1.0;
+        }
     }
 }
 
@@ -118,21 +122,25 @@ fn sample(pos: vec2<f32>, species: u32) -> f32 {
     let dist_home = 0.6 - distance(pos, center) * 0.0005;
     if (species == 0u) {
         if(sample == 0.0) {
-            return (dist_home) * val.x;
+            return  (val.x + val.y);
         } else {
-            return sample * (val.x / val.y);
+            return  val.x + val.y;
         }
     }
     if (species == 1u) {
         if(sample == 0.0) {
-            return dist_home - val.x;
+            return dist_home * (val.y  /val.z);
         } else {
-            return sample * (val.y / val.x);
+            return val.y/val.z;
         }
         // return val.x * val.y;
     }
     if (species == 2u) {
-        return val.z;
+        if(sample == 0.0) {
+            return dist_home * (val.z + val.x);
+        } else {
+            return val.z / (val.x + val.y);
+        }
     }
     if (species == 3u) {
         return val.w;

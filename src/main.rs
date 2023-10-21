@@ -18,11 +18,11 @@ use workerpool::Pool;
 
 const NUM_SLIMES: u32 = 1024 * 1024 * 3; // 1024 * 1024 * 2 is MAX. Computer will crash after that
 #[allow(dead_code)]
-const WINDOW_SIZE: (u32, u32) = ((2560.0 * 0.6) as u32, (1440.0 * 0.6) as u32);
+const WINDOW_SIZE: (u32, u32) = ((2560.0 * 0.5) as u32, (2560.0 * 0.5) as u32);
 // const WINDOW_SIZE: (u32, u32) = ((1280.0 * 0.6) as u32, (1440.0 * 0.6) as u32);
 // const WORLD_SIZE: (u32, u32) = (1088, 2176); // Georg Phone (1284 x 2778)
 // const WORLD_SIZE: (u32, u32) = (1280, 2776); // My Phone (1284 x 2778)
-const WORLD_SIZE: (u32, u32) = ((2560.0 * 1.5) as u32, (1440.0 * 1.5) as u32); // My Monitor
+const WORLD_SIZE: (u32, u32) = ((2560.0 * 1.0) as u32, (2560.0 * 1.0) as u32); // My Monitor
                                                                                // const WORLD_SIZE: (u32, u32) = ((1280.0 * 1.5) as u32, (1440.0 * 1.5) as u32); // My Monitor
 const FLOATS_PER_PIXEL: u32 = 4;
 const VID_N_SKIP_FRAMES: u128 = 6;
@@ -86,7 +86,7 @@ impl Slime {
                 pos: in_circle,
                 heading: rng.gen_range(0.0..std::f32::consts::PI * 2.0),
                 // heading: 0.0,
-                species: rng.gen_range(0..2),
+                species: rng.gen_range(0..3),
             });
         }
         swarm
